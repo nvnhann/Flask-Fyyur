@@ -1,61 +1,115 @@
 
 from flask import Flask, render_template, request, Response, flash, redirect, url_for, abort
 from app import app
-from helper import VenueForm
 from models import *
-from collections import defaultdict
+from helper import *
+from datetime import datetime
 import logging
 logger = logging.getLogger(__name__)
+
 #  ----------------------------------------------------------------
 #  Venues
 #  ----------------------------------------------------------------
 
 @app.route('/venues')
 def venues():
-  venues = Venue.query.all()
-  grouped_venues = defaultdict(list)
+    locations = get_distinct_locations_with_venues()
+    data = build_location_data_with_venues(locations)
+    return render_template('pages/venues.html', areas=data)
 
-  for venue in venues:
-    grouped_venues[(venue.city, venue.state)].append(venue)
+def get_distinct_locations_with_venues():
+    return Venue.query.distinct(Venue.city, Venue.state).order_by(Venue.state, Venue.city).all()
 
-  data = [
-      {
-          'city': city,
-          'state': state,
-          'venues': venues
-      }
-      for (city, state), venues in grouped_venues.items()
-  ]
-  return render_template('pages/venues.html', areas=data);
+def build_location_data_with_venues(locations):
+    def get_venues_data(location):
+        venues_data = []
+        venues = Venue.query.filter_by(city=location.city, state=location.state).all()
+        for venue in venues:
+            num_upcoming_shows = get_upcoming_shows_count(venue)
+            venues_data.append({
+                'id': venue.id,
+                'name': venue.name,
+                'num_upcoming_shows': num_upcoming_shows
+            })
+        return venues_data
+    
+    return [{
+        'city': location.city,
+        'state': location.state,
+        'venues': get_venues_data(location)
+    } for location in locations]
+
+def get_upcoming_shows_count(venue):
+    return Show.query.filter_by(venue_id=venue.id).filter(Show.start_time > datetime.now()).count()
 
 @app.route('/venues/search', methods=['POST'])
 def search_venues():
-  # seach for Hop should return "The Musical Hop".
-  # search for "Music" should return "The Musical Hop" and "Park Square Live Music & Coffee"
+    search_term = request.form.get('search_term', '')
+    venue_results = search_venues_by_name(search_term)
+    data = build_venue_data_with_upcoming_shows_count(venue_results)
+    response = {
+        "count": len(venue_results),
+        "data": data
+    }
+    return render_template('pages/search_venues.html', results=response, search_term=search_term)
 
-  search = request.form.get('search_term');
+def search_venues_by_name(search_term):
+    return Venue.query.filter(Venue.name.ilike(f'%{search_term}%')).all()
 
-  results = Venue.query.filter(Venue.name.match(f'%{search}%')).all()
-  venues = [{
-            'id': venue.id,
-            'name': venue.name,
-            'num_upcoming_shows': len(venue.upcoming_shows)
-          } for venue in results]
-  response = {'count': len(results), 'data': list(venues)}
-  return render_template('pages/search_venues.html', results=response, search_term=request.form.get('search_term', ''))
+def build_venue_data_with_upcoming_shows_count(venues):
+    def get_upcoming_shows_count(venue):
+        return Show.query.filter_by(venue_id=venue.id).filter(Show.start_time > datetime.now()).count()
+
+    return [{
+        "id": venue.id,
+        "name": venue.name,
+        "num_upcoming_shows": get_upcoming_shows_count(venue)
+    } for venue in venues]
 
 @app.route('/venues/<int:venue_id>')
 def show_venue(venue_id):
-  if venue_id is None:
-     return abort(404)
-  # shows the venue page with the given venue_id
-  venue = Venue.query.filter_by(id=venue_id).first_or_404()
+    venue = Venue.query.get(venue_id)
+    now = datetime.now()
+    
+    past_shows = get_shows(venue_id, now, '<')
+    upcoming_shows = get_shows(venue_id, now, '>=')
+    
+    data = {
+        'id': venue.id,
+        'name': venue.name,
+        'genres': venue.genres,
+        'address': venue.address,
+        'city': venue.city,
+        'state': venue.state,
+        'phone': venue.phone,
+        'website': venue.website_link,
+        'facebook_link': venue.facebook_link,
+        'seeking_talent': venue.seeking_talent,
+        'seeking_description': venue.seeking_description,
+        'image_link': venue.image_link,
+        'past_shows': format_shows(past_shows),
+        'upcoming_shows': format_shows(upcoming_shows),
+        'past_shows_count': len(past_shows),
+        'upcoming_shows_count': len(upcoming_shows),
+    }
+    return render_template('pages/show_venue.html', venue=data)
 
-  if venue is None:
-    abort(404)
+def get_shows(venue_id, now, operator):
+    return db.session.query(Show).join(Artist).filter(
+        Show.venue_id == venue_id,
+        eval(f"Show.start_time {operator} now")
+    ).all()
 
-  data = venue.getDataById()
-  return render_template('pages/show_venue.html', venue=data)
+def format_shows(shows):
+    return [
+        {
+            "artist_id": show.artist_id,
+            "artist_name": show.artist.name,
+            "artist_image_link": show.artist.image_link,
+            'start_time': show.start_time.isoformat()
+        }
+        for show in shows
+    ]
 
 #  Create Venue
 #  ----------------------------------------------------------------
@@ -68,7 +122,7 @@ def create_venue_form():
 @app.route('/venues/create', methods=['POST'])
 def create_venue_submission():
     try:
-      form = VenueForm(request.form)
+      form = VenueForm(request.form, meta={'csrf': False})
 
       if form.validate_on_submit:
         name = request.form.get('name')
@@ -76,8 +130,7 @@ def create_venue_submission():
         state = request.form.get('state')
         address = request.form.get('address')
         phone = request.form.get('phone')
-        genres = request.form.getlist('genres')  # If multiple genres are selected
-        genres = ', '.join(genres)
+        genres = request.form.getlist('genres')
         facebook_link = request.form.get('facebook_link')
         image_link = request.form.get('image_link')
         website_link = request.form.get('website_link')
@@ -97,7 +150,7 @@ def create_venue_submission():
                       genres=genres,
                       facebook_link=facebook_link,
                       image_link=image_link,
-                      website=website_link,
+                      website_link=website_link,
                       seeking_description=seeking_description)
         db.session.add(venue)
         db.session.commit()
@@ -121,12 +174,12 @@ def edit_venue(venue_id):
   data = {
       'id': venue.id,
       'name': venue.name,
-      'genres': venue.genres.split(', '),
+      'genres': venue.genres,
       'address': venue.address,
       'city': venue.city,
       'state': venue.state,
       'phone': venue.phone,
-      'website': venue.website,
+      'website_link': venue.website_link,
       'facebook_link': venue.facebook_link,
       'seeking_talent': venue.seeking_talent,
       'seeking_description': venue.seeking_description,
@@ -145,18 +198,18 @@ def edit_venue_submission(venue_id):
   form = VenueForm(request.form)
 
   if form.validate_on_submit():
-    form.genres.data = ', '.join(form.genres.data)
     venue.name = form.name.data
-    venue.genres = form.genres.data
+    venue.genres = request.form.getlist('genres')
     venue.address = form.address.data
     venue.city = form.city.data
     venue.state = form.state.data
     venue.phone = form.phone.data
-    venue.website = form.website_link.data
+    venue.website_link = form.website_link.data
     venue.facebook_link = form.facebook_link.data
     venue.seeking_talent = form.seeking_talent.data
     venue.seeking_description = form.seeking_description.data
     venue.image_link = form.image_link.data
+    db.session.add(venue)
     db.session.commit()
     return redirect(url_for('show_venue', venue_id=venue_id))
   

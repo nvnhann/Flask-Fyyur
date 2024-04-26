@@ -4,14 +4,26 @@ from app import app
 from helper import ShowForm
 from models import *
 from sqlalchemy import and_
+from datetime import datetime
+
 #  Shows
 #  ----------------------------------------------------------------
 
 @app.route('/shows')
 def shows():
+  shows = (db.session.query(Show).join(Artist).join(Venue).all())
   shows = Show.query.order_by(Show.start_time.desc()).all()
-  data = [show.getDataById() for show in shows]
-
+  data = [
+    {
+      "venue_id": show.venue_id,
+      "venue_name": show.venue.name,
+      "artist_id": show.artist_id,
+      "artist_name": show.artist.name,
+      "artist_image_link": show.artist.image_link,
+      "start_time": show.start_time.isoformat()
+    }
+    for show in shows
+  ]
   return render_template('pages/shows.html', shows=data)
 
 @app.route('/shows/create')
@@ -49,7 +61,7 @@ def create_show_submission():
          flash(f'This show is already registered!', 'danger')
          return render_template('forms/new_show.html', form=form)
       
-      show = Show(venue_id, artist_id, start_time)
+      show = Show(venue_id=venue_id, artist_id=artist_id, start_time=start_time)
 
       db.session.add(show)
 
